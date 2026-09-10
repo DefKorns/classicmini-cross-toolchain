@@ -1,0 +1,4 @@
+# SDL2 headers/lib extracted from the console's own firmware - not ours to
+# redistribute. Each developer supplies their own copy locally; the Docker
+# build reads them from here but they're never committed.
+vendor/
