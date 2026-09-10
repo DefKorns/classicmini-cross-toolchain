@@ -2,3 +2,4 @@
 # redistribute. Each developer supplies their own copy locally; the Docker
 # build reads them from here but they're never committed.
 vendor/
+test-out/

@@ -44,7 +44,19 @@ targets - this image only provides the compiler and libraries.
 ## Contents
 
 - `Dockerfile.jessie-armhf` - the toolchain image definition.
-- `vendor/sdl2-headers/`, `vendor/lib.tar` (gitignored, not in this repo) -
-  the console's own SDL2 headers (2.0.4) and `libSDL2.so`, extracted from
-  the console itself (generic Debian SDL2 packages don't match its
-  ABI/soname). Supply your own local copies before building.
+- `vendor/sdl2-headers/`, `vendor/lib.tar`, `vendor/libpng.tar`,
+  `vendor/libSDL2_ttf.tar`, `vendor/libfreetype.tar`, `vendor/libasound.tar`
+  (all gitignored, not in this repo) - the console's own headers/libs,
+  extracted from the console itself (generic Debian packages don't match its
+  exact ABI/soname). Supply your own local copies before building.
+
+## Debug tools (not part of the build)
+
+- `vendor/libSegFault.so` (gitignored, not in this repo) - the console's own
+  glibc SegFault helper. Copy it onto the console and run a crashing binary
+  with `LD_PRELOAD=/path/to/libSegFault.so ./binary` to get a backtrace on
+  segfault instead of a silent crash. No recompilation needed - works with
+  any already-built binary. (AddressSanitizer is also present in the
+  console's library dump, but isn't vendored here: it needs `-fsanitize=address`
+  at compile time, and its ~3-4x memory overhead is a real risk on the
+  Classic Mini's limited RAM.)

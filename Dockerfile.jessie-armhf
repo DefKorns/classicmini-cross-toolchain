@@ -1,32 +1,19 @@
-# Shared ARM/armhf cross-compile toolchain for NES/SNES Classic hmods
-# (originally built for OptionsMenu, now used by other hmods too via this
-# submodule). Each consuming project keeps its own Makefile.docker with its
-# own targets; this image only provides the compiler, SDL2/libpng, and upx.
-# Build context must be this repo's own root (so vendor/ resolves) - e.g.
+# Shared ARM/armhf cross-compile toolchain for NES/SNES Classic hmods. Each
+# consuming project keeps its own Makefile.docker; this image only provides
+# the compiler, SDL2/libpng/SDL2_ttf/freetype/ALSA, and upx. Build context
+# must be this repo's own root (so vendor/ resolves):
 # `docker build -f toolchain/Dockerfile.jessie-armhf -t <image> toolchain/`.
 #
-# Build environment matching the console's runtime: GLIBC <= 2.23, GLIBCXX <= 3.4.20.
-# Modern host toolchains (e.g. Ubuntu 22.04+/24.04's gcc-arm-linux-gnueabihf)
-# link against GLIBC_2.34 / GLIBCXX_3.4.32 symbols the console cannot satisfy.
-#
-# Debian Jessie never shipped an official armhf cross-compiler package (Debian
-# only added those starting with Stretch), so the cross-toolchain here is the
-# prebuilt Linaro GCC 4.9.4 / glibc 2.21 toolchain, cross-built for Cortex-A7
-# (the SoC core used by the NES/SNES Classic) via crosstool-NG:
+# Target: GLIBC <= 2.23, GLIBCXX <= 3.4.20 (the console's runtime ceiling).
+# Modern host toolchains link against newer symbols the console can't
+# satisfy. Debian never shipped an armhf cross-compiler before Stretch (too
+# new), so this uses the prebuilt Linaro GCC 4.9.4/glibc 2.21 toolchain,
+# cross-built for Cortex-A7, via crosstool-NG:
 # https://github.com/Christopher83/arm-cortex_a7-linux-gnueabihf-linaro_4.9
-# GCC 4.9 emits GLIBCXX_3.4.20 at most and glibc 2.21 < 2.23, both within what
-# the console's rootfs supports. Jessie itself is only used here as the base
-# userland (make, pkg-config, the armhf SDL2 dev package).
-#
-# The console's /usr/lib/libSDL2.so also carries no soname/version suffix,
-# unlike Debian's libSDL2-2.0.so.0, so the Makefile runs patchelf on the
-# linked binaries to rewrite that NEEDED entry to match (see LDFLAGS/
-# FIX_SDL2_SONAME in Makefile). libpng16.so.16 matches Debian's naming as-is.
+# Jessie itself is just the base userland (make, pkg-config).
 FROM debian:jessie
 
-# Jessie is archived; point apt at archive.debian.org (main only, no
-# security/updates mirror is kept there) and stop checking Valid-Until /
-# signature expiry.
+# Jessie is archived; point apt at archive.debian.org and skip Valid-Until checks.
 RUN echo 'deb http://archive.debian.org/debian/ jessie main' > /etc/apt/sources.list \
     && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until \
     && echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
@@ -39,19 +26,9 @@ RUN apt-get update -o Acquire::AllowInsecureRepositories=true \
     pkg-config \
     xz-utils
 
-# # Jessie's own patchelf (0.8, from 2014) chokes on binaries produced by more
-# # modern binutils, so use a current static build instead.
-# RUN curl -fL --retry 3 -o /tmp/patchelf.tar.gz \
-#     https://github.com/NixOS/patchelf/releases/download/0.18.0/patchelf-0.18.0-x86_64.tar.gz \
-#     && mkdir -p /tmp/patchelf && tar -xzf /tmp/patchelf.tar.gz -C /tmp/patchelf \
-#     && install -m755 /tmp/patchelf/bin/patchelf /usr/local/bin/patchelf \
-#     && rm -rf /tmp/patchelf.tar.gz /tmp/patchelf
-
-# The full libsdl2-dev dependency chain (Wayland, X11, PulseAudio, Mesa, ...)
-# doesn't resolve cleanly against the frozen archive.debian.org armhf index,
-# and none of that runtime is needed just to compile against the SDL2 headers
-# and link stub. Download only the packages actually needed and unpack them
-# directly (dpkg-deb -x skips dependency resolution entirely).
+# full libsdl2-dev pulls in Wayland/X11/PulseAudio/Mesa, none of which
+# resolve cleanly against the frozen archive; download just the needed .debs
+# and unpack directly (dpkg-deb -x skips dependency resolution).
 RUN dpkg --add-architecture armhf \
     && apt-get update -o Acquire::AllowInsecureRepositories=true \
     && mkdir -p /tmp/debs && cd /tmp/debs \
@@ -61,23 +38,11 @@ RUN dpkg --add-architecture armhf \
     && for f in *.deb; do dpkg-deb -x "$f" /; done \
     && cd / && rm -rf /tmp/debs /var/lib/apt/lists/*
 
-# ---------------------------------------------------------------------------
-# NEW: override Debian's SDL2 (2.0.2, generic SDL_config.h) with the exact
-# files originally supplied for OptionsMenu: headers straight from the
-# console's own build (2.0.4, SDL_config.h with SDL_VIDEO_DRIVER_MALI set)
-# and the real libSDL2.so extracted from the console itself. Confirmed paths
-# from `docker run --rm <image> find / -iname "SDL.h" -o -iname
-# "libSDL2*.so*"` on the previous build: headers at /usr/include/SDL2/,
-# libs at /usr/lib/arm-linux-gnueabihf/.
-#
-# Because the console's real libSDL2.so already has SONAME "libSDL2.so" (no
-# version suffix, confirmed with readelf -d), linking against it directly
-# means the resulting binary's NEEDED entry is already correct -- the
-# patchelf rewrite in the Makefile is no longer needed for SDL2 specifically.
-#
-# Needs vendor/sdl2-headers/ (unzipped sdl2includesnesc.zip) and vendor/lib.tar
-# (as received, not unpacked) present next to this Dockerfile.
-# ---------------------------------------------------------------------------
+# swap Debian's SDL2 (2.0.2, generic config) for the console's own build
+# (2.0.4, SDL_VIDEO_DRIVER_MALI). Its libSDL2.so has SONAME "libSDL2.so" (no
+# version suffix, unlike Debian's), so linking against it directly already
+# produces the correct NEEDED entry. Needs vendor/sdl2-headers/ and
+# vendor/lib.tar present next to this Dockerfile.
 COPY vendor/sdl2-headers/ /usr/include/SDL2/
 
 ADD vendor/lib.tar /tmp/console-libs/
@@ -85,27 +50,60 @@ RUN rm -f /usr/lib/arm-linux-gnueabihf/libSDL2-2.0.so* /usr/lib/arm-linux-gnueab
     && cp /tmp/console-libs/libSDL2.so /usr/lib/arm-linux-gnueabihf/libSDL2.so \
     && rm -rf /tmp/console-libs
 
-# texture.cpp uses libpng's 1.6 simplified API (png_image_begin_read_from_file
-# etc.), which Jessie's libpng12 (1.2.x) doesn't have. Jessie's own archive
-# never carried libpng16 either, so pull it from the Stretch archive instead
-# (still just headers/an ABI-compatible .so.16 stub for linking - the actual
-# console rootfs supplies the real libpng16.so.16 at runtime).
+# libpng16/SDL2_ttf/freetype6/asound dev packages don't exist in Jessie;
+# pull their headers from Stretch (stable across the relevant minor
+# versions - no console-specific variant needed there). The .so files get
+# swapped for the real ones below.
 RUN echo 'deb http://archive.debian.org/debian/ stretch main' > /etc/apt/sources.list \
     && apt-get update -o Acquire::AllowInsecureRepositories=true \
     && mkdir -p /tmp/debs && cd /tmp/debs \
     && apt-get download -o Acquire::AllowInsecureRepositories=true -o APT::Get::AllowUnauthenticated=true \
     libpng-dev:armhf libpng16-16:armhf \
+    libsdl2-ttf-dev:armhf libsdl2-ttf-2.0-0:armhf \
+    libfreetype6-dev:armhf libfreetype6:armhf \
+    libasound2-dev:armhf libasound2:armhf \
     && for f in *.deb; do dpkg-deb -x "$f" /; done \
     && cd / && rm -rf /tmp/debs /var/lib/apt/lists/* \
     && echo 'deb http://archive.debian.org/debian/ jessie main' > /etc/apt/sources.list
 
-# zlib1g-dev installs the arch-independent zlib.h to /usr/include, which the
-# cross-compiler (unlike the host gcc) does not search by default; only the
-# explicit -I/usr/include/arm-linux-gnueabihf passed by the Makefile is seen.
-RUN ln -s /usr/include/zlib.h /usr/include/arm-linux-gnueabihf/zlib.h
+# real libpng16.so.16 extracted from the console (vendor/libpng.tar).
+ADD vendor/libpng.tar /tmp/console-libs/
+RUN rm -f /usr/lib/arm-linux-gnueabihf/libpng16.so* /usr/lib/arm-linux-gnueabihf/libpng.so \
+    && cp /tmp/console-libs/libpng16.so.16 /usr/lib/arm-linux-gnueabihf/libpng16.so.16 \
+    && ln -s libpng16.so.16 /usr/lib/arm-linux-gnueabihf/libpng16.so \
+    && ln -s libpng16.so /usr/lib/arm-linux-gnueabihf/libpng.so \
+    && rm -rf /tmp/console-libs
 
-# Fetch the prebuilt Cortex-A7 GCC 4.9.4/glibc 2.21 toolchain and expose it
-# under the arm-linux-gnueabihf- prefix the Makefile expects.
+# same swap-in for SDL2_ttf/freetype/ALSA. Not currently linked by any
+# binary here - vendored so a future TTF-text or audio feature doesn't need
+# fresh console-library extraction.
+ADD vendor/libSDL2_ttf.tar /tmp/console-libs/
+RUN rm -f /usr/lib/arm-linux-gnueabihf/libSDL2_ttf*.so* \
+    && cp /tmp/console-libs/libSDL2_ttf.so /usr/lib/arm-linux-gnueabihf/libSDL2_ttf.so \
+    && rm -rf /tmp/console-libs
+
+ADD vendor/libfreetype.tar /tmp/console-libs/
+RUN rm -f /usr/lib/arm-linux-gnueabihf/libfreetype.so* \
+    && cp /tmp/console-libs/libfreetype.so.2.8.1 /usr/lib/arm-linux-gnueabihf/libfreetype.so.2.8.1 \
+    && ln -s libfreetype.so.2.8.1 /usr/lib/arm-linux-gnueabihf/libfreetype.so.2.8 \
+    && ln -s libfreetype.so.2.8 /usr/lib/arm-linux-gnueabihf/libfreetype.so \
+    && rm -rf /tmp/console-libs
+
+ADD vendor/libasound.tar /tmp/console-libs/
+RUN rm -f /usr/lib/arm-linux-gnueabihf/libasound.so* \
+    && cp /tmp/console-libs/libasound.so.2.0.0 /usr/lib/arm-linux-gnueabihf/libasound.so.2.0.0 \
+    && ln -s libasound.so.2.0.0 /usr/lib/arm-linux-gnueabihf/libasound.so.2 \
+    && ln -s libasound.so.2 /usr/lib/arm-linux-gnueabihf/libasound.so \
+    && rm -rf /tmp/console-libs
+
+# zlib.h/freetype2/alsa headers land in arch-independent /usr/include, which
+# the cross-compiler doesn't search by default (only -I/usr/include/arm-linux-gnueabihf).
+RUN ln -s /usr/include/zlib.h /usr/include/arm-linux-gnueabihf/zlib.h \
+    && ln -s /usr/include/freetype2 /usr/include/arm-linux-gnueabihf/freetype2 \
+    && ln -s /usr/include/alsa /usr/include/arm-linux-gnueabihf/alsa
+
+# prebuilt Cortex-A7 GCC 4.9.4/glibc 2.21 toolchain, exposed under the
+# arm-linux-gnueabihf- prefix Makefiles expect.
 RUN curl -fL --retry 3 -o /tmp/toolchain.tar.gz \
     https://codeload.github.com/Christopher83/arm-cortex_a7-linux-gnueabihf-linaro_4.9/tar.gz/refs/heads/master \
     && mkdir -p /opt/toolchain \
@@ -118,17 +116,9 @@ RUN curl -fL --retry 3 -o /tmp/toolchain.tar.gz \
 
 ENV PATH="/opt/toolchain/bin:${PATH}"
 
-# Static upx build (Jessie's own upx package is ancient and doesn't reliably
-# handle binaries from modern binutils); used to produce -upx compressed
-# variants of cross-compiled ARM binaries (e.g. pngpack-upx).
-#
-# Pinned to the 4.2.x line, NOT 5.x: UPX 5.0.0 switched its Linux ELF stub to
-# use memfd_create() for decompression (added for SELinux Enforcing support),
-# which the console's old kernel doesn't have -- packed binaries fail at
-# startup with "UPX-5.0 wants memfd_create(), or needs /dev/shm(,O_TMPFILE,)".
-# 4.2.x still uses the older /proc/self/exe-based mechanism, confirmed
-# working on-device (matches how the original pngpack-upx, built with the
-# even older UPX 3.94, already runs fine there).
+# static upx build (Jessie's own package is too old for modern binutils
+# output). Pinned to 4.2.x, not 5.x: 5.0 needs memfd_create() for its ELF
+# stub, which the console's kernel doesn't have.
 RUN curl -fL --retry 3 -o /tmp/upx.tar.xz \
     https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-amd64_linux.tar.xz \
     && mkdir -p /tmp/upx && tar -xJf /tmp/upx.tar.xz -C /tmp/upx --strip-components=1 \
