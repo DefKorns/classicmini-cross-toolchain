@@ -1,3 +1,20 @@
+#  Copyright (c) 2026 DefKorns (https://defkorns.github.io/LICENSE)
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+#
+#
 # Shared ARM/armhf cross-compile toolchain for NES/SNES Classic hmods. Each
 # consuming project keeps its own Makefile.docker; this image only provides
 # the compiler, SDL2/libpng/SDL2_ttf/freetype/ALSA, and upx. Build context
@@ -103,9 +120,13 @@ RUN ln -s /usr/include/zlib.h /usr/include/arm-linux-gnueabihf/zlib.h \
     && ln -s /usr/include/alsa /usr/include/arm-linux-gnueabihf/alsa
 
 # prebuilt Cortex-A7 GCC 4.9.4/glibc 2.21 toolchain, exposed under the
-# arm-linux-gnueabihf- prefix Makefiles expect.
+# arm-linux-gnueabihf- prefix Makefiles expect. Pinned to a specific commit
+# of DefKorns' own fork, not upstream's master: the original
+# (Christopher83/arm-cortex_a7-linux-gnueabihf-linaro_4.9) has no LICENSE
+# file, no tags, and only 6 commits on master - too fragile a dependency to
+# pull from live and unpinned.
 RUN curl -fL --retry 3 -o /tmp/toolchain.tar.gz \
-    https://codeload.github.com/Christopher83/arm-cortex_a7-linux-gnueabihf-linaro_4.9/tar.gz/refs/heads/master \
+    https://codeload.github.com/DefKorns/arm-cortex_a7-linux-gnueabihf-linaro_4.9/tar.gz/e356b8ff3017c0bb0627ef6ebb8750f774d216a8 \
     && mkdir -p /opt/toolchain \
     && tar -xzf /tmp/toolchain.tar.gz -C /opt/toolchain --strip-components=1 \
     && rm -f /tmp/toolchain.tar.gz \
