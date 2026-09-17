@@ -79,6 +79,7 @@ RUN echo 'deb http://archive.debian.org/debian/ stretch main' > /etc/apt/sources
     libsdl2-ttf-dev:armhf libsdl2-ttf-2.0-0:armhf \
     libfreetype6-dev:armhf libfreetype6:armhf \
     libasound2-dev:armhf libasound2:armhf \
+    libssl-dev:armhf \
     && for f in *.deb; do dpkg-deb -x "$f" /; done \
     && cd / && rm -rf /tmp/debs /var/lib/apt/lists/* \
     && echo 'deb http://archive.debian.org/debian/ jessie main' > /etc/apt/sources.list
@@ -136,6 +137,31 @@ RUN curl -fL --retry 3 -o /tmp/toolchain.tar.gz \
     done
 
 ENV PATH="/opt/toolchain/bin:${PATH}"
+
+# static libcurl for theme_downloader - BusyBox wget can't do TLS 1.2.
+# Built from source, not libcurl4-openssl-dev:armhf, to skip the LDAP/
+# RTMP/SSH2/GSSAPI/nghttp2/idn2 static archives nothing here uses.
+# Pinned to 8.4.0: newer curl needs OpenSSL >= 3.0, and no static 3.x
+# libssl-dev exists in this toolchain's Jessie/Stretch archives.
+RUN curl -fL --retry 3 -o /tmp/curl-src.tar.xz https://curl.se/download/curl-8.4.0.tar.xz \
+    && mkdir -p /tmp/curl-src && tar -xJf /tmp/curl-src.tar.xz -C /tmp/curl-src --strip-components=1 \
+    && cd /tmp/curl-src \
+    && CC=arm-linux-gnueabihf-gcc \
+    CPPFLAGS="-I/usr/include -I/usr/include/arm-linux-gnueabihf" \
+    LDFLAGS="-L/usr/lib/arm-linux-gnueabihf" \
+    LIBS="-ldl -lpthread" \
+    ./configure --host=arm-linux-gnueabihf --prefix=/opt/curl-static \
+    --disable-shared --enable-static \
+    --with-openssl --with-zlib \
+    --disable-ldap --disable-ldaps --disable-rtsp --disable-dict --disable-telnet \
+    --disable-tftp --disable-pop3 --disable-imap --disable-smtp --disable-gopher \
+    --disable-mqtt --disable-manual --disable-ares --disable-ntlm-wb \
+    --without-librtmp --without-libssh2 --without-libssh --without-nghttp2 \
+    --without-libidn2 --without-libpsl --without-brotli --without-zstd \
+    --without-gssapi \
+    && make -j"$(nproc)" \
+    && make install \
+    && cd / && rm -rf /tmp/curl-src /tmp/curl-src.tar.xz
 
 # static upx build (Jessie's own package is too old for modern binutils
 # output). Pinned to 4.2.x, not 5.x: 5.0 needs memfd_create() for its ELF
