@@ -17,8 +17,9 @@
 #
 # Shared ARM/armhf cross-compile toolchain for NES/SNES Classic hmods. Each
 # consuming project keeps its own Makefile.docker; this image only provides
-# the compiler, SDL2/libpng/SDL2_ttf/freetype/ALSA, and upx. Build context
-# must be this repo's own root (so vendor/ resolves):
+# the compiler, SDL2/libpng/SDL2_ttf/freetype/ALSA, upx, and git/rsync (for
+# Makefile.docker targets that tag versions or package the .hmod in-container).
+# Build context must be this repo's own root (so vendor/ resolves):
 # `docker build -f toolchain/Dockerfile.jessie-armhf -t <image> toolchain/`.
 #
 # Target: GLIBC <= 2.23, GLIBCXX <= 3.4.20 (the console's runtime ceiling).
@@ -30,8 +31,14 @@
 # Jessie itself is just the base userland (make, pkg-config).
 FROM debian:jessie
 
-# Jessie is archived; point apt at archive.debian.org and skip Valid-Until checks.
+# Jessie is archived; point apt at archive.debian.org and skip Valid-Until
+# checks. debian-security is needed alongside plain jessie/main: this base
+# image ships perl-base 5.20.2-3+deb8u12, but jessie/main's own archived
+# snapshot only has a perl built against the older +deb8u11 - without the
+# security suite, apt refuses to install perl (and anything depending on
+# it, like git) since it won't downgrade the already-installed perl-base.
 RUN echo 'deb http://archive.debian.org/debian/ jessie main' > /etc/apt/sources.list \
+    && echo 'deb http://archive.debian.org/debian-security/ jessie/updates main' >> /etc/apt/sources.list \
     && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until \
     && echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
 
@@ -39,8 +46,10 @@ RUN apt-get update -o Acquire::AllowInsecureRepositories=true \
     && apt-get install -y --no-install-recommends --allow-unauthenticated \
     ca-certificates \
     curl \
+    git \
     make \
     pkg-config \
+    rsync \
     xz-utils
 
 # full libsdl2-dev pulls in Wayland/X11/PulseAudio/Mesa, none of which
