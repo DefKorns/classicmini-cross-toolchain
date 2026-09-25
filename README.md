@@ -1,4 +1,4 @@
-# hakchi-toolchain
+# classicmini-cross-toolchain
 
 Shared ARM/armhf cross-compile Docker toolchain for NES/SNES Classic
 (hakchi/canoe) homebrew mods, built with a GCC 4.9.4/glibc 2.21 toolchain
@@ -17,7 +17,7 @@ Add as a git submodule in the consuming project (conventionally at
 `toolchain/`):
 
 ```sh
-git submodule add https://github.com/DefKorns/hakchi-toolchain.git toolchain
+git submodule add https://github.com/DefKorns/classicmini-cross-toolchain.git toolchain
 ```
 
 `vendor/sdl2-headers/` and `vendor/lib.tar` are **not** part of this repo
@@ -39,7 +39,9 @@ docker run --rm -v "$PWD:/src" <image-tag> make -f Makefile.docker CROSS_PREFIX=
 ```
 
 Each consuming project keeps its own `Makefile.docker` with its own build
-targets - this image only provides the compiler and libraries.
+targets - this image only provides the compiler, libraries, and `git`/`rsync`
+(so a `Makefile.docker` target can tag versions and package a `.hmod` from
+inside the container, not just compile).
 
 ## Contents
 
