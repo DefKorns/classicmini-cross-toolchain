@@ -3,8 +3,11 @@
 Shared ARM/armhf cross-compile Docker toolchain for NES/SNES Classic
 (hakchi/canoe) homebrew mods, built with a GCC 4.9.4/glibc 2.21 toolchain
 matching the console's own runtime (GLIBC <= 2.23, GLIBCXX <= 3.4.20), plus
-the console's own SDL2 headers/lib and a compatible libpng16, and a pinned
-UPX build for compressing the resulting binaries.
+the console's SDL2, libpng16, ALSA, FreeType and SDL2_ttf, and a pinned UPX
+build for compressing the resulting binaries.
+
+Every library is built from public source during `docker build`; nothing is
+copied off a console, so the image can be built (or pulled) by anyone.
 
 Originally built for [OptionsMenu](https://github.com/DefKorns/OptionsMenu),
 extracted here so every hmod that needs the same toolchain (OptionsMenu,
@@ -20,13 +23,7 @@ Add as a git submodule in the consuming project (conventionally at
 git submodule add https://github.com/DefKorns/classicmini-cross-toolchain.git toolchain
 ```
 
-`vendor/sdl2-headers/` and `vendor/lib.tar` are **not** part of this repo
-(see Contents below - they're extracted from the console's own firmware, not
-ours to redistribute). Copy your own local copies into `toolchain/vendor/`
-before building - they're gitignored, so this step is per-checkout.
-
-Build the image with this repo's root as the build context, so `vendor/`
-resolves:
+Build the image with this repo's root as the build context:
 
 ```sh
 docker build -f toolchain/Dockerfile.jessie-armhf -t <image-tag> toolchain/
@@ -46,11 +43,28 @@ inside the container, not just compile).
 ## Contents
 
 - `Dockerfile.jessie-armhf` - the toolchain image definition.
-- `vendor/sdl2-headers/`, `vendor/lib.tar`, `vendor/libpng.tar`,
-  `vendor/libSDL2_ttf.tar`, `vendor/libfreetype.tar`, `vendor/libasound.tar`
-  (all gitignored, not in this repo) - the console's own headers/libs,
-  extracted from the console itself (generic Debian packages don't match its
-  exact ABI/soname). Supply your own local copies before building.
+
+## Libraries
+
+Versions follow the older of the two consoles (NES Classic), so nothing links
+against a symbol one of them lacks. Sources are pinned by sha256.
+
+| Library | Version | Source |
+|---|---|---|
+| SDL2 | 2.0.4, Nintendo's fork (Mali video driver) | [snes-classic-oss](https://github.com/DefKorns/snes-classic-oss) mirror of Nintendo's OSS release, pinned commit |
+| alsa-lib | 1.0.29, unversioned symbols | alsa-project.org |
+| libpng | 1.6.20 | sourceforge.net/projects/libpng |
+| FreeType | 2.8.1, no zlib/bzip2/png/harfbuzz | savannah.gnu.org |
+| SDL2_ttf | 2.0.14 | libsdl.org |
+
+SDL2 links against generated stubs of the Mali GPU driver (`libMali`,
+`libEGL`, `libGLESv2`, `libGLESv1_CM`); the console's own driver is used at
+runtime. Its exported symbols and `NEEDED` entries match the console's
+`libSDL2.so`. Consumers link with `-Wl,--allow-shlib-undefined`, since the
+driver libraries aren't in the image.
+
+FreeType and SDL2_ttf aren't on the console's rootfs, so hmods that use them
+ship the image's copies (`libfreetype.so.6`, `libSDL2_ttf-2.0.so.0`).
 
 ## Debug tools (not part of the build)
 

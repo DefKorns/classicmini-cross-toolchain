@@ -19,8 +19,8 @@
 # consuming project keeps its own Makefile.docker; this image only provides
 # the compiler, SDL2/libpng/SDL2_ttf/freetype/ALSA, upx, and git/rsync (for
 # Makefile.docker targets that tag versions or package the .hmod in-container).
-# Build context must be this repo's own root (so vendor/ resolves):
-# `docker build -f toolchain/Dockerfile.jessie-armhf -t <image> toolchain/`.
+# Every console library is built from public source; nothing is copied off a
+# console: `docker build -f toolchain/Dockerfile.jessie-armhf -t <image> toolchain/`.
 #
 # Target: GLIBC <= 2.23, GLIBCXX <= 3.4.20 (the console's runtime ceiling).
 # Modern host toolchains link against newer symbols the console can't
@@ -29,6 +29,22 @@
 # cross-built for Cortex-A7, via crosstool-NG:
 # https://github.com/Christopher83/arm-cortex_a7-linux-gnueabihf-linaro_4.9
 # Jessie itself is just the base userland (make, pkg-config).
+
+# The console's SDL2 is Nintendo's 2.0.4 fork (Mali video driver), published
+# only in their OSS release; fetched from a pinned extracted mirror of it.
+# Jessie's git is too old for partial clones, hence the separate stage.
+FROM debian:bookworm-slim AS oss
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+ARG OSS_COMMIT=c62f184fcf539f7d47ba1ce6352574e768cf880b
+ARG SDL2_PKG=ext-sdl2-6bd764a32987c8117f4c85e319b799829eedadec
+RUN git clone --filter=blob:none --no-checkout https://github.com/DefKorns/snes-classic-oss.git /oss \
+    && cd /oss \
+    && git sparse-checkout set --no-cone "/${SDL2_PKG}/" \
+    && git checkout "$OSS_COMMIT" \
+    && mv "/oss/${SDL2_PKG}" /sdl2
+
 FROM debian:jessie
 
 # Jessie is archived; point apt at archive.debian.org and skip Valid-Until
@@ -42,89 +58,57 @@ RUN echo 'deb http://archive.debian.org/debian/ jessie main' > /etc/apt/sources.
     && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until \
     && echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
 
+# gcc/libc6-dev: host compiler for build-time helpers (freetype's apinames).
 RUN apt-get update -o Acquire::AllowInsecureRepositories=true \
     && apt-get install -y --no-install-recommends --allow-unauthenticated \
+    bzip2 \
     ca-certificates \
+    cmake \
     curl \
+    gcc \
     git \
+    libc6-dev \
     make \
+    patch \
     pkg-config \
     rsync \
     xz-utils
 
-# full libsdl2-dev pulls in Wayland/X11/PulseAudio/Mesa, none of which
-# resolve cleanly against the frozen archive; download just the needed .debs
-# and unpack directly (dpkg-deb -x skips dependency resolution).
+# zlib from Jessie; dpkg-deb -x skips dependency resolution.
 RUN dpkg --add-architecture armhf \
     && apt-get update -o Acquire::AllowInsecureRepositories=true \
     && mkdir -p /tmp/debs && cd /tmp/debs \
     && apt-get download -o Acquire::AllowInsecureRepositories=true -o APT::Get::AllowUnauthenticated=true \
-    libsdl2-dev:armhf libsdl2-2.0-0:armhf \
     zlib1g-dev:armhf zlib1g:armhf \
     && for f in *.deb; do dpkg-deb -x "$f" /; done \
     && cd / && rm -rf /tmp/debs /var/lib/apt/lists/*
 
-# swap Debian's SDL2 (2.0.2, generic config) for the console's own build
-# (2.0.4, SDL_VIDEO_DRIVER_MALI). Its libSDL2.so has SONAME "libSDL2.so" (no
-# version suffix, unlike Debian's), so linking against it directly already
-# produces the correct NEEDED entry. Needs vendor/sdl2-headers/ and
-# vendor/lib.tar present next to this Dockerfile.
-COPY vendor/sdl2-headers/ /usr/include/SDL2/
-
-ADD vendor/lib.tar /tmp/console-libs/
-RUN rm -f /usr/lib/arm-linux-gnueabihf/libSDL2-2.0.so* /usr/lib/arm-linux-gnueabihf/libSDL2.so \
-    && cp /tmp/console-libs/libSDL2.so /usr/lib/arm-linux-gnueabihf/libSDL2.so \
-    && rm -rf /tmp/console-libs
-
-# libpng16/SDL2_ttf/freetype6/asound dev packages don't exist in Jessie;
-# pull their headers from Stretch (stable across the relevant minor
-# versions - no console-specific variant needed there). The .so files get
-# swapped for the real ones below.
+# From Stretch: libssl-dev for the static curl below, and EGL/GLES2/udev
+# headers for SDL2's Mali build (headers only, kept out of the sysroot;
+# host-arch packages, since some armhf -dev ones are gone from the archive).
 RUN echo 'deb http://archive.debian.org/debian/ stretch main' > /etc/apt/sources.list \
     && apt-get update -o Acquire::AllowInsecureRepositories=true \
-    && mkdir -p /tmp/debs && cd /tmp/debs \
-    && apt-get download -o Acquire::AllowInsecureRepositories=true -o APT::Get::AllowUnauthenticated=true \
-    libpng-dev:armhf libpng16-16:armhf \
-    libsdl2-ttf-dev:armhf libsdl2-ttf-2.0-0:armhf \
-    libfreetype6-dev:armhf libfreetype6:armhf \
-    libasound2-dev:armhf libasound2:armhf \
-    libssl-dev:armhf \
-    && for f in *.deb; do dpkg-deb -x "$f" /; done \
+    && mkdir -p /tmp/debs/sysroot /tmp/debs/headers && cd /tmp/debs \
+    && (cd sysroot && apt-get download -o Acquire::AllowInsecureRepositories=true -o APT::Get::AllowUnauthenticated=true \
+    libssl-dev:armhf) \
+    && (cd headers && apt-get download -o Acquire::AllowInsecureRepositories=true -o APT::Get::AllowUnauthenticated=true \
+    libegl1-mesa-dev libgles2-mesa-dev mesa-common-dev libudev-dev) \
+    && for f in sysroot/*.deb; do dpkg-deb -x "$f" /; done \
+    && mkdir -p /opt/sdl2-headers \
+    && for f in headers/*.deb; do dpkg-deb -x "$f" /tmp/debs/x; done \
+    && cp -r /tmp/debs/x/usr/include/EGL /tmp/debs/x/usr/include/GLES2 /tmp/debs/x/usr/include/KHR \
+    /tmp/debs/x/usr/include/libudev.h /opt/sdl2-headers/ \
     && cd / && rm -rf /tmp/debs /var/lib/apt/lists/* \
     && echo 'deb http://archive.debian.org/debian/ jessie main' > /etc/apt/sources.list
 
-# real libpng16.so.16 extracted from the console (vendor/libpng.tar).
-ADD vendor/libpng.tar /tmp/console-libs/
-RUN rm -f /usr/lib/arm-linux-gnueabihf/libpng16.so* /usr/lib/arm-linux-gnueabihf/libpng.so \
-    && cp /tmp/console-libs/libpng16.so.16 /usr/lib/arm-linux-gnueabihf/libpng16.so.16 \
-    && ln -s libpng16.so.16 /usr/lib/arm-linux-gnueabihf/libpng16.so \
-    && ln -s libpng16.so /usr/lib/arm-linux-gnueabihf/libpng.so \
-    && rm -rf /tmp/console-libs
+# Mali's fbdev window type, as SDL2's Mali driver uses it.
+RUN printf '%s\n' \
+    '#ifndef FBDEV_WINDOW_H' '#define FBDEV_WINDOW_H' \
+    'typedef struct fbdev_window { unsigned short width; unsigned short height; } fbdev_window;' \
+    '#endif' > /opt/sdl2-headers/fbdev_window.h
 
-# same swap-in for SDL2_ttf/freetype/ALSA. Not currently linked by any
-# binary here - vendored so a future TTF-text or audio feature doesn't need
-# fresh console-library extraction.
-ADD vendor/libSDL2_ttf.tar /tmp/console-libs/
-RUN rm -f /usr/lib/arm-linux-gnueabihf/libSDL2_ttf*.so* \
-    && cp /tmp/console-libs/libSDL2_ttf.so /usr/lib/arm-linux-gnueabihf/libSDL2_ttf.so \
-    && rm -rf /tmp/console-libs
-
-ADD vendor/libfreetype.tar /tmp/console-libs/
-RUN rm -f /usr/lib/arm-linux-gnueabihf/libfreetype.so* \
-    && cp /tmp/console-libs/libfreetype.so.2.8.1 /usr/lib/arm-linux-gnueabihf/libfreetype.so.2.8.1 \
-    && ln -s libfreetype.so.2.8.1 /usr/lib/arm-linux-gnueabihf/libfreetype.so.2.8 \
-    && ln -s libfreetype.so.2.8 /usr/lib/arm-linux-gnueabihf/libfreetype.so \
-    && rm -rf /tmp/console-libs
-
-ADD vendor/libasound.tar /tmp/console-libs/
-RUN rm -f /usr/lib/arm-linux-gnueabihf/libasound.so* \
-    && cp /tmp/console-libs/libasound.so.2.0.0 /usr/lib/arm-linux-gnueabihf/libasound.so.2.0.0 \
-    && ln -s libasound.so.2.0.0 /usr/lib/arm-linux-gnueabihf/libasound.so.2 \
-    && ln -s libasound.so.2 /usr/lib/arm-linux-gnueabihf/libasound.so \
-    && rm -rf /tmp/console-libs
-
-# zlib.h/freetype2/alsa headers land in arch-independent /usr/include, which
-# the cross-compiler doesn't search by default (only -I/usr/include/arm-linux-gnueabihf).
+# arch-independent headers the cross-compiler doesn't search by default
+# (only -I/usr/include/arm-linux-gnueabihf).
 RUN ln -s /usr/include/zlib.h /usr/include/arm-linux-gnueabihf/zlib.h \
     && ln -s /usr/include/freetype2 /usr/include/arm-linux-gnueabihf/freetype2 \
     && ln -s /usr/include/alsa /usr/include/arm-linux-gnueabihf/alsa
@@ -146,6 +130,109 @@ RUN curl -fL --retry 3 -o /tmp/toolchain.tar.gz \
     done
 
 ENV PATH="/opt/toolchain/bin:${PATH}"
+
+# Console library versions, built for linking against (and shipping, for
+# freetype/SDL2_ttf, which the console lacks). Installed via DESTDIR so only
+# libs/headers/.pc land in the sysroot, never ARM binaries in /usr/bin.
+ENV CROSS_LIBDIR=/usr/lib/arm-linux-gnueabihf \
+    PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig
+COPY <<'EOF' /usr/local/bin/cross-autotools
+#!/bin/sh
+# [MAKE_ARGS=...] cross-autotools <url> <sha256> [configure args...]
+set -e
+url=$1 sha=$2; shift 2
+cd /tmp && rm -rf build stage && mkdir build
+curl -fL --retry 3 -o src.tar "$url"
+echo "$sha  src.tar" | sha256sum -c -
+tar -xf src.tar -C build --strip-components=1
+cd build
+CC=arm-linux-gnueabihf-gcc \
+CPPFLAGS="-I/usr/include/arm-linux-gnueabihf" \
+LDFLAGS="-L$CROSS_LIBDIR -Wl,--allow-shlib-undefined" \
+./configure --host=arm-linux-gnueabihf --prefix=/usr --libdir="$CROSS_LIBDIR" \
+    --disable-static "$@"
+make -j"$(nproc)" $MAKE_ARGS
+make install DESTDIR=/tmp/stage $MAKE_ARGS
+find /tmp/stage -name '*.so*' -type f -exec arm-linux-gnueabihf-strip --strip-unneeded {} +
+cp -a /tmp/stage/usr/include/. /usr/include/
+cp -a /tmp/stage$CROSS_LIBDIR/. $CROSS_LIBDIR/
+find $CROSS_LIBDIR -name '*.la' -delete
+# *-config helpers are shell scripts, safe to run on the host
+for f in /tmp/stage/usr/bin/*-config; do
+    [ -f "$f" ] && head -c2 "$f" | grep -q '#!' && cp "$f" /usr/local/bin/
+done
+cd / && rm -rf /tmp/build /tmp/stage /tmp/src.tar
+EOF
+RUN chmod +x /usr/local/bin/cross-autotools
+
+# Versions are the oldest across both consoles (NES Classic: alsa-lib 1.0.29,
+# libpng 1.6.20), so nothing links against a symbol one of them lacks.
+# alsa-lib unversioned, like the console's.
+RUN cross-autotools https://www.alsa-project.org/files/pub/lib/alsa-lib-1.0.29.tar.bz2 \
+    73043c35eb9636be0f4af6a240235c213f12a25feb1f04aeeac8cb7e30fcbdd0 \
+    --disable-python --with-configdir=/usr/share/alsa --without-versioned
+
+RUN cross-autotools https://download.sourceforge.net/libpng/libpng-1.6.20.tar.xz \
+    55c5959e9f3484d96141a3226c53bc9da42a4845e70879d3e1d6e94833d1918b
+
+# no zlib/bzip2/png/harfbuzz, like the copy the console hmods ship
+RUN cross-autotools https://download.savannah.gnu.org/releases/freetype/freetype-2.8.1.tar.bz2 \
+    e5435f02e02d2b87bb8e4efdcaa14b1f78c9cf3ab1ed80f94b6382fb6acc7d78 \
+    --without-zlib --without-bzip2 --without-png --without-harfbuzz
+
+# Nintendo's CMakeLists needs their in-house NerdCMakeModules, which isn't in
+# the OSS release; its add_package/package_library only do packaging, so
+# no-op stand-ins suffice. GPU driver stubs (empty functions generated from
+# the EGL/GLES2 headers) satisfy the -lMali/-lEGL link under SDL's
+# --no-undefined; the console's real ones are used at runtime. Output matches the
+# console's: libSDL2.so, SONAME "libSDL2.so". Flags go through $CFLAGS: the
+# CMakeLists overwrites CMAKE_C_FLAGS with it, and CMake 3.0's feature
+# checks ignore linker flags, hence the -L there too.
+COPY --from=oss /sdl2 /tmp/sdl2
+RUN cd /tmp/sdl2/source \
+    && for p in $(cat ../series); do patch -p1 < "../$p"; done \
+    && mkdir -p /tmp/sdl2/nerd /tmp/sdl2/stubs \
+    && printf '%s\n' 'include(GNUInstallDirs)' 'list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR})' \
+    > /tmp/sdl2/nerd/NerdCMakeModulesConfig.cmake \
+    && printf '%s\n' 'macro(add_package)' 'endmacro()' 'macro(package_library)' 'endmacro()' \
+    > /tmp/sdl2/nerd/NerdPackageHelper.cmake \
+    && stub() { \
+    { [ -n "$2" ] && grep -h -o -E "\b$2[A-Za-z0-9_]* *\(" $3 | tr -d ' (' | sort -u | sed 's/.*/void &(void) {}/'; } \
+    | arm-linux-gnueabihf-gcc -x c -shared -o "/tmp/sdl2/stubs/lib$1.so" -Wl,-soname,"lib$1.so" -; \
+    } \
+    && stub Mali "" "" && stub GLESv1_CM "" "" \
+    && stub EGL egl /opt/sdl2-headers/EGL/egl.h \
+    && stub GLESv2 gl /opt/sdl2-headers/GLES2/gl2.h \
+    && mkdir -p /tmp/sdl2/pc \
+    && printf 'Name: egl\nDescription: stub\nVersion: 1.4\nLibs: -L/tmp/sdl2/stubs -lEGL\n' > /tmp/sdl2/pc/egl.pc \
+    && printf 'Name: glesv2\nDescription: stub\nVersion: 2.0\nLibs: -L/tmp/sdl2/stubs -lGLESv2 -lGLESv1_CM\n' > /tmp/sdl2/pc/glesv2.pc \
+    && printf '%s\n' \
+    'set(CMAKE_SYSTEM_NAME Linux)' 'set(CMAKE_SYSTEM_PROCESSOR arm)' \
+    'set(CMAKE_C_COMPILER arm-linux-gnueabihf-gcc)' \
+    'set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)' > /tmp/sdl2/toolchain.cmake \
+    && mkdir build && cd build \
+    && PKG_CONFIG_PATH=/tmp/sdl2/pc CFLAGS="-O2 -I/usr/include/arm-linux-gnueabihf -I/opt/sdl2-headers -include /opt/sdl2-headers/fbdev_window.h -DMESA_EGL_NO_X11_HEADERS -L$CROSS_LIBDIR -L/tmp/sdl2/stubs" \
+    cmake .. -DCMAKE_TOOLCHAIN_FILE=/tmp/sdl2/toolchain.cmake -DNerdCMakeModules_DIR=/tmp/sdl2/nerd \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DLIB_SUFFIX=/arm-linux-gnueabihf \
+    -DCMAKE_INSTALL_LIBDIR=lib/arm-linux-gnueabihf -DBUILD_SHARED_LIBS=ON \
+    -DRPATH=OFF -DCLOCK_GETTIME=ON \
+    -DVIDEO_MALI=ON -DVIDEO_OPENGLES=ON -DVIDEO_OPENGL=OFF \
+    -DVIDEO_X11=OFF -DVIDEO_WAYLAND=OFF -DVIDEO_MIR=OFF -DVIDEO_RPI=OFF -DVIDEO_VIVANTE=OFF \
+    -DVIDEO_DUMMY=OFF -DVIDEO_DIRECTFB=OFF \
+    -DALSA=ON -DALSA_SHARED=ON -DOSS=OFF -DPULSEAUDIO=OFF -DESD=OFF -DARTS=OFF \
+    -DNAS=OFF -DSNDIO=OFF -DFUSIONSOUND=OFF -DDISKAUDIO=OFF -DDUMMYAUDIO=OFF \
+    -DINPUT_TSLIB=OFF \
+    && make -j"$(nproc)" \
+    && make install DESTDIR=/tmp/sdl2/stage \
+    && cp -a /tmp/sdl2/stage/usr/include/SDL2 /usr/include/ \
+    && cp /tmp/sdl2/stage/usr/lib/arm-linux-gnueabihf/pkgconfig/sdl2.pc "$PKG_CONFIG_LIBDIR/" \
+    && cp "$(find . -name libSDL2.so -type f)" "$CROSS_LIBDIR/libSDL2.so" \
+    && cd / && rm -rf /tmp/sdl2
+
+# skip the showfont/glfont demos
+RUN MAKE_ARGS="noinst_PROGRAMS=" cross-autotools https://www.libsdl.org/projects/SDL_ttf/release/SDL2_ttf-2.0.14.tar.gz \
+    34db5e20bcf64e7071fe9ae25acaa7d72bdc4f11ab3ce59acc768ab62fe39276 \
+    --disable-sdltest --without-x
 
 # static libcurl for theme_downloader - BusyBox wget can't do TLS 1.2.
 # Built from source, not libcurl4-openssl-dev:armhf, to skip the LDAP/
