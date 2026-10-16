@@ -83,17 +83,14 @@ RUN dpkg --add-architecture armhf \
     && for f in *.deb; do dpkg-deb -x "$f" /; done \
     && cd / && rm -rf /tmp/debs /var/lib/apt/lists/*
 
-# From Stretch: libssl-dev for the static curl below, and EGL/GLES2/udev
-# headers for SDL2's Mali build (headers only, kept out of the sysroot;
-# host-arch packages, since some armhf -dev ones are gone from the archive).
+# From Stretch: EGL/GLES2/udev headers for SDL2's Mali build (headers only,
+# kept out of the sysroot; host-arch packages, since some armhf -dev ones
+# are gone from the archive).
 RUN echo 'deb http://archive.debian.org/debian/ stretch main' > /etc/apt/sources.list \
     && apt-get update -o Acquire::AllowInsecureRepositories=true \
-    && mkdir -p /tmp/debs/sysroot /tmp/debs/headers && cd /tmp/debs \
-    && (cd sysroot && apt-get download -o Acquire::AllowInsecureRepositories=true -o APT::Get::AllowUnauthenticated=true \
-    libssl-dev:armhf) \
+    && mkdir -p /tmp/debs/headers && cd /tmp/debs \
     && (cd headers && apt-get download -o Acquire::AllowInsecureRepositories=true -o APT::Get::AllowUnauthenticated=true \
     libegl1-mesa-dev libgles2-mesa-dev mesa-common-dev libudev-dev) \
-    && for f in sysroot/*.deb; do dpkg-deb -x "$f" /; done \
     && mkdir -p /opt/sdl2-headers \
     && for f in headers/*.deb; do dpkg-deb -x "$f" /tmp/debs/x; done \
     && cp -r /tmp/debs/x/usr/include/EGL /tmp/debs/x/usr/include/GLES2 /tmp/debs/x/usr/include/KHR \
@@ -234,27 +231,51 @@ RUN MAKE_ARGS="noinst_PROGRAMS=" cross-autotools https://www.libsdl.org/projects
     34db5e20bcf64e7071fe9ae25acaa7d72bdc4f11ab3ce59acc768ab62fe39276 \
     --disable-sdltest --without-x
 
-# static libcurl for theme_downloader - BusyBox wget can't do TLS 1.2.
-# Built from source, not libcurl4-openssl-dev:armhf, to skip the LDAP/
-# RTMP/SSH2/GSSAPI/nghttp2/idn2 static archives nothing here uses.
-# Pinned to 8.4.0: newer curl needs OpenSSL >= 3.0, and no static 3.x
-# libssl-dev exists in this toolchain's Jessie/Stretch archives.
-RUN curl -fL --retry 3 -o /tmp/curl-src.tar.xz https://curl.se/download/curl-8.4.0.tar.xz \
+# static HTTPS-only libcurl on mbedTLS for the Options Menu downloader -
+# BusyBox wget can't do TLS 1.2. mbedTLS instead of OpenSSL: the linked
+# downloader is 0.25 MB instead of 1 MB after upx. TLS 1.2 only, no server
+# side, DTLS, PSK or legacy ciphers.
+RUN curl -fL --retry 3 -o /tmp/mbedtls.tar.bz2 \
+    https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.2/mbedtls-3.6.2.tar.bz2 \
+    && echo "8b54fb9bcf4d5a7078028e0520acddefb7900b3e66fec7f7175bb5b7d85ccdca  /tmp/mbedtls.tar.bz2" | sha256sum -c - \
+    && mkdir -p /tmp/mbedtls && tar -xjf /tmp/mbedtls.tar.bz2 -C /tmp/mbedtls --strip-components=1 \
+    && cd /tmp/mbedtls \
+    && for d in SSL_PROTO_TLS1_3 SSL_TLS1_3_COMPATIBILITY_MODE SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_ENABLED \
+    SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED \
+    SSL_EARLY_DATA SSL_PROTO_DTLS SSL_DTLS_ANTI_REPLAY SSL_DTLS_HELLO_VERIFY SSL_DTLS_CLIENT_PORT_REUSE \
+    SSL_DTLS_CONNECTION_ID SSL_DTLS_SRTP SSL_SRV_C SSL_COOKIE_C SSL_CACHE_C SSL_TICKET_C NET_C TIMING_C \
+    ARIA_C CAMELLIA_C DES_C CMAC_C NIST_KW_C PKCS7_C X509_CSR_PARSE_C X509_CSR_WRITE_C X509_CRT_WRITE_C \
+    X509_CREATE_C PEM_WRITE_C SHA3_C RIPEMD160_C LMS_C ECJPAKE_C KEY_EXCHANGE_ECJPAKE_ENABLED \
+    KEY_EXCHANGE_PSK_ENABLED KEY_EXCHANGE_DHE_PSK_ENABLED KEY_EXCHANGE_ECDHE_PSK_ENABLED \
+    KEY_EXCHANGE_RSA_PSK_ENABLED KEY_EXCHANGE_RSA_ENABLED SELF_TEST DEBUG_C VERSION_FEATURES GENPRIME \
+    PKCS5_C PKCS12_C ECP_DP_SECP192R1_ENABLED ECP_DP_SECP224R1_ENABLED ECP_DP_SECP192K1_ENABLED \
+    ECP_DP_SECP224K1_ENABLED ECP_DP_SECP256K1_ENABLED ECP_DP_BP256R1_ENABLED ECP_DP_BP384R1_ENABLED \
+    ECP_DP_BP512R1_ENABLED ECP_DP_CURVE448_ENABLED PSA_CRYPTO_C PSA_CRYPTO_STORAGE_C PSA_ITS_FILE_C; do \
+    sed -i "s|^#define MBEDTLS_$d\$|//&|; s|^#define MBEDTLS_$d |//&|" include/mbedtls/mbedtls_config.h; done \
+    && make -C library -j"$(nproc)" GEN_FILES= CC=arm-linux-gnueabihf-gcc AR=arm-linux-gnueabihf-ar \
+    CFLAGS="-std=gnu99 -Os -ffunction-sections -fdata-sections" libmbedcrypto.a libmbedx509.a libmbedtls.a \
+    && mkdir -p /opt/mbedtls/lib && cp -r include /opt/mbedtls/ && cp library/*.a /opt/mbedtls/lib/ \
+    && cd / && rm -rf /tmp/mbedtls /tmp/mbedtls.tar.bz2
+
+# 8.11's TLS 1.3 ticket call isn't guarded by MBEDTLS_SSL_PROTO_TLS1_3
+RUN curl -fL --retry 3 -o /tmp/curl-src.tar.xz https://curl.se/download/curl-8.11.1.tar.xz \
+    && echo "c7ca7db48b0909743eaef34250da02c19bc61d4f1dcedd6603f109409536ab56  /tmp/curl-src.tar.xz" | sha256sum -c - \
     && mkdir -p /tmp/curl-src && tar -xJf /tmp/curl-src.tar.xz -C /tmp/curl-src --strip-components=1 \
     && cd /tmp/curl-src \
-    && CC=arm-linux-gnueabihf-gcc \
-    CPPFLAGS="-I/usr/include -I/usr/include/arm-linux-gnueabihf" \
-    LDFLAGS="-L/usr/lib/arm-linux-gnueabihf" \
-    LIBS="-ldl -lpthread" \
+    && sed -i 's|^#ifdef MBEDTLS_SSL_TLS1_3_SIGNAL_NEW_SESSION_TICKETS_ENABLED|#if defined(MBEDTLS_SSL_TLS1_3_SIGNAL_NEW_SESSION_TICKETS_ENABLED) \&\& defined(MBEDTLS_SSL_PROTO_TLS1_3)|' \
+    lib/vtls/mbedtls.c \
+    && CC=arm-linux-gnueabihf-gcc CFLAGS="-Os -ffunction-sections -fdata-sections" LIBS="-lpthread" \
     ./configure --host=arm-linux-gnueabihf --prefix=/opt/curl-static \
-    --disable-shared --enable-static \
-    --with-openssl --with-zlib \
-    --disable-ldap --disable-ldaps --disable-rtsp --disable-dict --disable-telnet \
-    --disable-tftp --disable-pop3 --disable-imap --disable-smtp --disable-gopher \
-    --disable-mqtt --disable-manual --disable-ares --disable-ntlm-wb \
-    --without-librtmp --without-libssh2 --without-libssh --without-nghttp2 \
-    --without-libidn2 --without-libpsl --without-brotli --without-zstd \
-    --without-gssapi \
+    --disable-shared --enable-static --with-mbedtls=/opt/mbedtls --without-zlib \
+    --disable-ftp --disable-file --disable-smb --disable-ldap --disable-ldaps --disable-rtsp \
+    --disable-dict --disable-telnet --disable-tftp --disable-pop3 --disable-imap --disable-smtp \
+    --disable-gopher --disable-mqtt --disable-manual --disable-ntlm --disable-cookies \
+    --disable-alt-svc --disable-hsts --disable-doh --disable-mime --disable-netrc \
+    --disable-progress-meter --disable-verbose --disable-proxy --disable-kerberos-auth \
+    --disable-negotiate-auth --disable-aws --disable-unix-sockets --disable-headers-api \
+    --disable-bindlocal --disable-dateparse --disable-ipfs --disable-websockets \
+    --without-librtmp --without-libssh2 --without-libssh --without-nghttp2 --without-libidn2 \
+    --without-libpsl --without-brotli --without-zstd --without-gssapi \
     && make -j"$(nproc)" \
     && make install \
     && cd / && rm -rf /tmp/curl-src /tmp/curl-src.tar.xz
