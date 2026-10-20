@@ -45,6 +45,18 @@ RUN git clone --filter=blob:none --no-checkout https://github.com/DefKorns/snes-
     && git checkout "$OSS_COMMIT" \
     && mv "/oss/${SDL2_PKG}" /sdl2
 
+# The Options Menu UI font: Noto Sans JP pinned by commit, instanced at
+# wght=400 and subset to fonts/unicodes-latin.txt. SOURCE_DATE_EPOCH keeps the
+# output byte-identical, and the build fails if the subset's sha256 changes.
+FROM debian:bookworm-slim AS fonts
+RUN apt-get update     && apt-get install -y --no-install-recommends ca-certificates curl python3-venv     && rm -rf /var/lib/apt/lists/*
+ARG GOOGLE_FONTS_COMMIT=295d98a7a0c17c68f1341eaeea354e7960ea70d3
+ARG NOTO_SANS_JP_SHA256=c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f
+ARG SUBSET_SHA256=8f7dd4236395c7eab0fb6ac18ac9023cfa684de7dd74e814f9545fe9516b6166
+ENV SOURCE_DATE_EPOCH=1789042800
+COPY fonts/unicodes-latin.txt /tmp/unicodes-latin.txt
+RUN python3 -m venv /venv     && echo 'fonttools==4.64.0 --hash=sha256:4a05783ff54ce4c7a28f18e5772efdf63c219374bd9ffc55452182e1cef8be60' > /tmp/requirements.txt     && /venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt     && curl -fL --retry 3 -o /tmp/NotoSansJP-variable.ttf     "https://raw.githubusercontent.com/google/fonts/${GOOGLE_FONTS_COMMIT}/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf"     && echo "${NOTO_SANS_JP_SHA256}  /tmp/NotoSansJP-variable.ttf" | sha256sum -c -     && /venv/bin/fonttools varLib.instancer /tmp/NotoSansJP-variable.ttf wght=400 -o /tmp/instance.ttf     && /venv/bin/pyftsubset /tmp/instance.ttf --unicodes-file=/tmp/unicodes-latin.txt     --output-file=/NotoSansJP-Latin-subset.ttf     && echo "${SUBSET_SHA256}  /NotoSansJP-Latin-subset.ttf" | sha256sum -c -
+
 FROM debian:jessie
 
 # Jessie is archived; point apt at archive.debian.org and skip Valid-Until
@@ -288,6 +300,9 @@ RUN curl -fL --retry 3 -o /tmp/upx.tar.xz \
     && mkdir -p /tmp/upx && tar -xJf /tmp/upx.tar.xz -C /tmp/upx --strip-components=1 \
     && install -m755 /tmp/upx/upx /usr/local/bin/upx \
     && rm -rf /tmp/upx.tar.xz /tmp/upx
+
+# the Options Menu copies it into its hmod, like libSDL2_ttf and libfreetype
+COPY --from=fonts /NotoSansJP-Latin-subset.ttf /opt/options-menu/fonts/NotoSansJP-Latin-subset.ttf
 
 WORKDIR /src
 CMD ["make", "CROSS_PREFIX=arm-linux-gnueabihf-"]

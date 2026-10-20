@@ -66,6 +66,15 @@ driver libraries aren't in the image.
 FreeType and SDL2_ttf aren't on the console's rootfs, so hmods that use them
 ship the image's copies (`libfreetype.so.6`, `libSDL2_ttf-2.0.so.0`).
 
+## Options Menu UI font
+
+`/opt/options-menu/fonts/NotoSansJP-Latin-subset.ttf` is Noto Sans JP (SIL OFL,
+pinned `google/fonts` commit), instanced at wght=400 and subset to
+`fonts/unicodes-latin.txt` by a Python build stage that doesn't reach the final
+image. The build fails if the result differs from `SUBSET_SHA256`; after
+changing `unicodes-latin.txt`, build once, take the sha256 from the error and
+update the `ARG`.
+
 ## Debug tools (not part of the build)
 
 - `vendor/libSegFault.so` (gitignored, not in this repo) - the console's own
