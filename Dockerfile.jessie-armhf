@@ -70,13 +70,15 @@ RUN echo 'deb http://archive.debian.org/debian/ jessie main' > /etc/apt/sources.
     && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until \
     && echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until
 
-# gcc/libc6-dev: host compiler for build-time helpers (freetype's apinames).
+# gcc/g++/libc6-dev: host compiler for build-time helpers (freetype's apinames,
+# PicoDrive's Cyclone generator, which is C++ and has to run on the build machine).
 RUN apt-get update -o Acquire::AllowInsecureRepositories=true \
     && apt-get install -y --no-install-recommends --allow-unauthenticated \
     bzip2 \
     ca-certificates \
     cmake \
     curl \
+    g++ \
     gcc \
     git \
     libc6-dev \
