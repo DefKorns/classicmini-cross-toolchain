@@ -43,6 +43,9 @@ inside the container, not just compile).
 ## Contents
 
 - `Dockerfile.jessie-armhf` - the toolchain image definition.
+- `Dockerfile.es-armhf` - the build dependencies of ES-RetroPie (EmulationStation) on top of that image, published as
+  `ghcr.io/defkorns/classicmini-es-toolchain:es-armhf`. It follows the base image's `jessie-armhf` tag; build it locally
+  with `docker build -f Dockerfile.es-armhf -t classicmini-es-toolchain:local .`.
 
 ## Libraries
 
@@ -65,6 +68,20 @@ driver libraries aren't in the image.
 
 FreeType and SDL2_ttf aren't on the console's rootfs, so hmods that use them
 ship the image's copies (`libfreetype.so.6`, `libSDL2_ttf-2.0.so.0`).
+
+### ES image (`Dockerfile.es-armhf`)
+
+Added on top of the image above, under `/opt`, for building ES-RetroPie:
+
+| Library | Version | Where |
+| --- | --- | --- |
+| CMake | 3.27.9 (host binary; the base image has Jessie's 3.0.2) | `/opt/cmake`, first on `PATH` |
+| FreeImage | 3.18.0, static | `/opt/freeimage` |
+| RapidJSON | pinned commit, headers | `/opt/rapidjson` |
+| libGLESv2 | link stub, generated from the GLES2 header | `/opt/gles-stubs` |
+
+libcurl comes from the base image (`/opt/curl-static`, link with `/opt/mbedtls`). Like the Mali stubs above, the
+`libGLESv2` stub is for linking only: the program uses the console's own driver at run time.
 
 ## Options Menu UI font
 

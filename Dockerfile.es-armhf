@@ -1,0 +1,102 @@
+#  Copyright (c) 2026 DefKorns (https://defkorns.github.io/LICENSE)
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+#
+#
+# Build dependencies for ES-RetroPie (EmulationStation) on the NES/SNES
+# Classic, on top of the shared toolchain image (Dockerfile.jessie-armhf).
+# That image already has the compiler, the console's SDL2 2.0.4 (Mali video
+# driver), FreeType, ALSA, libpng and a static HTTPS libcurl on mbedTLS; this
+# one adds what EmulationStation needs and the console doesn't have: a recent
+# CMake, FreeImage, RapidJSON and link stubs for libGLESv2. Every library is
+# built from public source pinned by sha256 or commit; nothing is copied off a
+# console: `docker build -f Dockerfile.es-armhf -t <image> .`.
+#
+# Consumers keep their own build script (see the es-port fork); this image only
+# provides the dependencies, under /opt:
+#   /opt/cmake            CMake, first on PATH
+#   /opt/freeimage        libfreeimage.a + FreeImage.h
+#   /opt/rapidjson        headers
+#   /opt/gles-stubs       libGLESv2.so, for linking only
+#   /opt/curl-static      libcurl.a (from the base image; link with /opt/mbedtls)
+#
+# Target: GLIBC <= 2.23, GLIBCXX <= 3.4.20, like the base image.
+
+# BASE follows the base image's master (the jessie-armhf tag the image workflow
+# moves on every push), so this image always sits on the latest toolchain. Pass
+# a v* or sha-* tag to build against a fixed version.
+ARG BASE=ghcr.io/defkorns/classicmini-cross-toolchain:jessie-armhf
+
+# CMake: the base image uses Jessie's 3.0.2, too old for ES-RetroPie
+# (cmake_minimum_required 3.5...4.0) and its pugixml submodule. The upstream
+# binary is a host (x86_64) tool, which is all a cross build needs; it runs on
+# Jessie's glibc 2.19. RapidJSON is header-only and has no recent release, so
+# it is pinned by commit. The sources are fetched in a separate stage because
+# Jessie's git/unzip are too old or missing, same as the SDL2 stage of the base.
+FROM debian:bookworm-slim AS src
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git unzip \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+ARG CMAKE_VERSION=3.27.9
+ARG CMAKE_SHA256=72b01478eeb312bf1a0136208957784fe55a7b587f8d9f9142a7fc9b0b9e9a28
+ARG FREEIMAGE_VERSION=3.18.0
+ARG FREEIMAGE_ZIP=FreeImage3180.zip
+ARG FREEIMAGE_SHA256=f41379682f9ada94ea7b34fe86bf9ee00935a3147be41b6569c9605a53e438fd
+ARG RAPIDJSON_COMMIT=24b5e7a8b27f42fa16b96fc70aade9106cf7102f
+RUN curl -fL --retry 3 -o cmake.tar.gz \
+    "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
+    && echo "${CMAKE_SHA256}  cmake.tar.gz" | sha256sum -c - \
+    && mkdir /opt/cmake && tar -xzf cmake.tar.gz -C /opt/cmake --strip-components=1 \
+    && curl -fL --retry 3 -o freeimage.zip \
+    "https://downloads.sourceforge.net/project/freeimage/Source%20Distribution/${FREEIMAGE_VERSION}/${FREEIMAGE_ZIP}" \
+    && echo "${FREEIMAGE_SHA256}  freeimage.zip" | sha256sum -c - \
+    && unzip -q freeimage.zip \
+    && git clone -q https://github.com/Tencent/rapidjson.git \
+    && git -C rapidjson checkout -q "${RAPIDJSON_COMMIT}"
+
+FROM ${BASE}
+
+# /opt/cmake/bin ahead of Jessie's cmake, so `cmake` is the recent one
+ENV PATH="/opt/cmake/bin:${PATH}"
+COPY --from=src /opt/cmake /opt/cmake
+COPY --from=src /src/rapidjson/include /opt/rapidjson/include
+
+# FreeImage, static: it bundles its own libpng/libjpeg/libtiff/..., none of
+# which the console has. The Makefile reads CFLAGS/CXXFLAGS from the
+# environment (it only appends its include paths), so they are exported, not
+# passed as make variables, which would replace those include paths. NEON is
+# off in the bundled libpng: its ARM detection assumes a different target.
+RUN --mount=from=src,source=/src,target=/src \
+    mkdir -p /tmp/freeimage && cp -a /src/FreeImage/. /tmp/freeimage && cd /tmp/freeimage \
+    && export CFLAGS="-O2 -fPIC -fexceptions -fvisibility=hidden -DPNG_ARM_NEON_OPT=0" \
+    && export CXXFLAGS="-O2 -fPIC -fexceptions -fvisibility=hidden -Wno-ctor-dtor-privacy" \
+    && make -f Makefile.gnu -j"$(nproc)" CC=arm-linux-gnueabihf-gcc CXX=arm-linux-gnueabihf-g++ \
+    AR=arm-linux-gnueabihf-ar LD=arm-linux-gnueabihf-ld libfreeimage.a \
+    && mkdir -p /opt/freeimage/lib /opt/freeimage/include \
+    && cp libfreeimage.a /opt/freeimage/lib/ && cp Source/FreeImage.h /opt/freeimage/include/ \
+    && cd / && rm -rf /tmp/freeimage
+
+# GPU driver stub for linking: one empty function per GLES 2.0 entry point,
+# generated from the header, with SONAME "libGLESv2.so" like the console's.
+# The program links against it and binds to the console's real driver at run
+# time. Kept in its own directory, out of the sysroot, so it can't shadow the
+# console's library in anything that is packaged.
+RUN mkdir -p /opt/gles-stubs/lib \
+    && grep -h -o -E 'GL_APIENTRY +gl[A-Za-z0-9]+' /opt/sdl2-headers/GLES2/gl2.h | awk '{print $2}' | sort -u \
+    | sed 's/.*/void &(void) {}/' \
+    | arm-linux-gnueabihf-gcc -x c -shared -o /opt/gles-stubs/lib/libGLESv2.so -Wl,-soname,libGLESv2.so -
+
+WORKDIR /src

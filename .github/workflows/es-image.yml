@@ -1,0 +1,49 @@
+name: es-image
+
+# Publishes ghcr.io/defkorns/classicmini-es-toolchain (Dockerfile.es-armhf: the
+# ES-RetroPie build dependencies on top of the toolchain image), tagged with
+# the commit (sha-<7 chars>) plus es-armhf for master's latest. It is a separate
+# package from the toolchain image and never touches its tags. It runs after the
+# image workflow succeeds (which runs on every push to master), so it is always
+# built on the base that was just published, not on the previous one.
+on:
+  workflow_run:
+    workflows: [image]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    # a workflow_run event also fires when the base image build failed
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags
+        id: tags
+        run: |
+          repo=$(echo "$GITHUB_REPOSITORY" | tr 'A-Z' 'a-z')
+          image=ghcr.io/${repo%/*}/classicmini-es-toolchain
+          echo "tags=$image:sha-${GITHUB_SHA::7},$image:es-armhf" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.es-armhf
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=es
+          cache-to: type=gha,scope=es,mode=max
