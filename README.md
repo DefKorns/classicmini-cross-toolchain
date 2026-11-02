@@ -44,8 +44,10 @@ inside the container, not just compile).
 
 - `Dockerfile.jessie-armhf` - the toolchain image definition.
 - `Dockerfile.es-armhf` - the build dependencies of ES-RetroPie (EmulationStation) on top of that image, published as
-  `ghcr.io/defkorns/classicmini-es-toolchain:es-armhf`. It follows the base image's `jessie-armhf` tag; build it locally
-  with `docker build -f Dockerfile.es-armhf -t classicmini-es-toolchain:local .`.
+  `ghcr.io/defkorns/classicmini-es-toolchain`: `es-armhf` is master's latest, `sha-<commit>` every build and `v<x.y.z>` a
+  release (git tag `es-v<x.y.z>`; the plain `v*` tags are the toolchain image's). The published images are built on the
+  toolchain image of the same commit; a local build follows `jessie-armhf`:
+  `docker build -f Dockerfile.es-armhf -t classicmini-es-toolchain:local .`.
 
 ## Libraries
 

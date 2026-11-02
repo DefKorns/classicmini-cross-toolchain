@@ -1,16 +1,23 @@
 name: es-image
 
 # Publishes ghcr.io/defkorns/classicmini-es-toolchain (Dockerfile.es-armhf: the
-# ES-RetroPie build dependencies on top of the toolchain image), tagged with
-# the commit (sha-<7 chars>) plus es-armhf for master's latest. It is a separate
-# package from the toolchain image and never touches its tags. It runs after the
-# image workflow succeeds (which runs on every push to master), so it is always
-# built on the base that was just published, not on the previous one.
+# ES-RetroPie build dependencies on top of the toolchain image). It is a
+# separate package from the toolchain image and never touches its tags.
+#
+# Tags: sha-<7 chars> for every build, es-armhf for master's latest, and v<x.y.z>
+# for a git tag es-v<x.y.z> (the plain v* git tags belong to the toolchain image).
+#
+# Every build sits on the toolchain image of the same commit (sha-<7 chars>), so a
+# version is tied to the exact toolchain it was built with. The image workflow
+# runs on every push to master and this one runs after it succeeds, so that
+# base exists by the time it is needed.
 on:
   workflow_run:
     workflows: [image]
     types: [completed]
     branches: [master]
+  push:
+    tags: ['es-v*']
   workflow_dispatch:
 
 jobs:
@@ -37,13 +44,20 @@ jobs:
         run: |
           repo=$(echo "$GITHUB_REPOSITORY" | tr 'A-Z' 'a-z')
           image=ghcr.io/${repo%/*}/classicmini-es-toolchain
-          echo "tags=$image:sha-${GITHUB_SHA::7},$image:es-armhf" >> "$GITHUB_OUTPUT"
+          tags="$image:sha-${GITHUB_SHA::7}"
+          case "$GITHUB_REF" in
+            refs/tags/es-v*) tags="$tags,$image:${GITHUB_REF#refs/tags/es-}" ;;
+            *) tags="$tags,$image:es-armhf" ;;
+          esac
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          echo "base=ghcr.io/$repo:sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.es-armhf
           push: true
+          build-args: BASE=${{ steps.tags.outputs.base }}
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha,scope=es
           cache-to: type=gha,scope=es,mode=max
