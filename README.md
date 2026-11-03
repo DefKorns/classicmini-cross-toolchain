@@ -56,7 +56,9 @@ inside the container, not just compile).
 
 binutils 2.42 and GCC 13.3.0 (C and C++), built from the GNU sources pinned by sha256, against the glibc 2.21 sysroot of
 the toolchain image. Cortex-A7, NEON-VFPv4, hard float; the compiler is `/opt/gcc13/bin/arm-linux-gnueabihf-gcc`, first
-on `PATH`. It has none of the toolchain image's libraries.
+on `PATH`. It has none of the toolchain image's libraries, only the EGL/GLES2 headers and `libEGL.so`/`libGLESv2.so`
+link stubs in `/opt/gles-stubs` (`-I/opt/gles-stubs/include -L/opt/gles-stubs/lib`; the program uses the console's own
+drivers at run time).
 
 Link with `-static-libstdc++ -static-libgcc`: the output then needs GLIBC <= 2.17 and no GLIBCXX/CXXABI symbols, which
 the console's libstdc++ (3.4.20) could not provide.

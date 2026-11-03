@@ -70,8 +70,26 @@ RUN mkdir /src/build-gcc && cd /src/build-gcc \
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libisl23 libmpc3 libmpfr6 libgmp10 make git ca-certificates python3 file \
+    && apt-get install -y --no-install-recommends libisl23 libmpc3 libmpfr6 libgmp10 make git ca-certificates python3 file perl curl libx11-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/gcc13 /opt/gcc13
 ENV PATH="/opt/gcc13/bin:${PATH}"
+
+# EGL/GLES2 headers and link stubs for programs that talk to the GPU driver, e.g.
+# the PPSSPP core: one empty function per entry point, generated from the headers,
+# with the same SONAMEs as the console's drivers. For linking only; the program
+# binds to the console's real libraries at run time. X11 is only the headers
+# that vulkan.h includes; the build never links against it.
+COPY --from=base /opt/sdl2-headers/EGL /opt/gles-stubs/include/EGL
+COPY --from=base /opt/sdl2-headers/GLES2 /opt/gles-stubs/include/GLES2
+COPY --from=base /opt/sdl2-headers/KHR /opt/gles-stubs/include/KHR
+RUN mkdir -p /opt/gles-stubs/lib \
+    && ln -s /usr/include/X11 /opt/gles-stubs/include/X11 \
+    && stub() { \
+    grep -h -o -E "\b$2[A-Za-z0-9_]* *\(" $3 | tr -d ' (' | sort -u | sed 's/.*/void &(void) {}/' \
+    | arm-linux-gnueabihf-gcc -x c -shared -o "/opt/gles-stubs/lib/lib$1.so" -Wl,-soname,"lib$1.so" -; \
+    } \
+    && stub EGL egl /opt/gles-stubs/include/EGL/egl.h \
+    && stub GLESv2 gl "/opt/gles-stubs/include/GLES2/gl2.h /opt/gles-stubs/include/GLES2/gl2ext.h"
+
 WORKDIR /src
