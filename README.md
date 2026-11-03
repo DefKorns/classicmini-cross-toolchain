@@ -48,6 +48,18 @@ inside the container, not just compile).
   release (git tag `es-v<x.y.z>`; the plain `v*` tags are the toolchain image's). The published images are built on the
   toolchain image of the same commit; a local build follows `jessie-armhf`:
   `docker build -f Dockerfile.es-armhf -t classicmini-es-toolchain:local .`.
+- `Dockerfile.gcc13-armhf` - a GCC 13.3 cross-compiler for sources that need C++17 or newer (the shared image stops at
+  C++11), published as `ghcr.io/defkorns/classicmini-gcc13`: `gcc13` is master's latest, `sha-<commit>` every build and
+  `v<x.y.z>` a release (git tag `gcc13-v<x.y.z>`). It only rebuilds when its Dockerfile changes.
+
+### GCC 13 image (`Dockerfile.gcc13-armhf`)
+
+binutils 2.42 and GCC 13.3.0 (C and C++), built from the GNU sources pinned by sha256, against the glibc 2.21 sysroot of
+the toolchain image. Cortex-A7, NEON-VFPv4, hard float; the compiler is `/opt/gcc13/bin/arm-linux-gnueabihf-gcc`, first
+on `PATH`. It has none of the toolchain image's libraries.
+
+Link with `-static-libstdc++ -static-libgcc`: the output then needs GLIBC <= 2.17 and no GLIBCXX/CXXABI symbols, which
+the console's libstdc++ (3.4.20) could not provide.
 
 ## Libraries
 

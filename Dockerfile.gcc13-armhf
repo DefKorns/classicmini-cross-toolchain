@@ -1,0 +1,77 @@
+#  Copyright (c) 2026 DefKorns (https://defkorns.github.io/LICENSE)
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# GCC 13.3 cross-compiler for the NES/SNES Classic, for sources that need C++17
+# or newer (PPSSPP). The shared image (Dockerfile.jessie-armhf) has Linaro GCC
+# 4.9.4, which stops at C++11. This one builds binutils 2.42 and GCC 13.3.0
+# from the GNU sources, pinned by sha256, against the glibc 2.21 sysroot of the
+# base image, so the output still loads on the console: link with
+# `-static-libstdc++ -static-libgcc` and the result needs GLIBC <= 2.18 and no
+# GLIBCXX/CXXABI at all (the console's libstdc++ is 3.4.20).
+# `docker build -f Dockerfile.gcc13-armhf -t <image> .`
+#
+#   /opt/gcc13/bin   arm-linux-gnueabihf-{gcc,g++,ar,strip,...}, first on PATH
+#
+# Target: Cortex-A7, NEON-VFPv4, hard float. Only the compiler lives here; the
+# libraries of the base image are not in it.
+
+ARG BASE=ghcr.io/defkorns/classicmini-cross-toolchain:jessie-armhf
+
+FROM ${BASE} AS base
+
+FROM debian:bookworm-slim AS build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates curl xz-utils \
+    libgmp-dev libmpfr-dev libmpc-dev libisl-dev texinfo \
+    && rm -rf /var/lib/apt/lists/*
+ARG BINUTILS_VERSION=2.42
+ARG BINUTILS_SHA256=f6e4d41fd5fc778b06b7891457b3620da5ecea1006c6a4a41ae998109f85a800
+ARG GCC_VERSION=13.3.0
+ARG GCC_SHA256=0845e9621c9543a13f484e94584a49ffc0129970e9914624235fc1d061a0c083
+ARG TARGET=arm-linux-gnueabihf
+ARG PREFIX=/opt/gcc13
+
+WORKDIR /src
+RUN curl -fL --retry 3 -o binutils.tar.xz "https://ftp.gnu.org/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.xz" \
+    && echo "${BINUTILS_SHA256}  binutils.tar.xz" | sha256sum -c - \
+    && curl -fL --retry 3 -o gcc.tar.xz "https://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz" \
+    && echo "${GCC_SHA256}  gcc.tar.xz" | sha256sum -c - \
+    && tar -xf binutils.tar.xz && tar -xf gcc.tar.xz
+
+# The glibc 2.21 sysroot of the base image: GCC needs its headers and libc to
+# build libgcc and libstdc++, and the result is linked against it.
+COPY --from=base /opt/toolchain/arm-cortex_a7-linux-gnueabihf/sysroot ${PREFIX}/${TARGET}/sysroot
+
+RUN mkdir /src/build-binutils && cd /src/build-binutils \
+    && ../binutils-${BINUTILS_VERSION}/configure --target=${TARGET} --prefix=${PREFIX} \
+    --with-sysroot=${PREFIX}/${TARGET}/sysroot --disable-nls --disable-multilib --disable-werror \
+    && make -j"$(nproc)" && make install
+
+ENV PATH="${PREFIX}/bin:${PATH}"
+RUN mkdir /src/build-gcc && cd /src/build-gcc \
+    && ../gcc-${GCC_VERSION}/configure --target=${TARGET} --prefix=${PREFIX} \
+    --with-sysroot=${PREFIX}/${TARGET}/sysroot --enable-languages=c,c++ --disable-multilib --disable-nls \
+    --with-cpu=cortex-a7 --with-fpu=neon-vfpv4 --with-float=hard --enable-threads=posix --enable-__cxa_atexit \
+    --disable-libsanitizer --disable-libgomp --disable-libquadmath --disable-libssp --disable-libitm \
+    --disable-libatomic --disable-bootstrap --disable-werror \
+    && make -j"$(nproc)" && make install-strip
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libisl23 libmpc3 libmpfr6 libgmp10 make git ca-certificates python3 file \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /opt/gcc13 /opt/gcc13
+ENV PATH="/opt/gcc13/bin:${PATH}"
+WORKDIR /src
